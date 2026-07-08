@@ -83,6 +83,13 @@
     margin:0 auto;
     aspect-ratio:1/1;
   }
+  #board{
+    touch-action:none;
+    user-select:none;
+    -webkit-user-select:none;
+    -webkit-touch-callout:none;
+    cursor:pointer;
+  }
   .cell{
     background:var(--cell-empty);
     border-radius:6px;
@@ -299,9 +306,12 @@
   </section>
 
   <section class="panel">
-    <h2>Tes 3 pièces</h2>
+    <div class="panel-head">
+      <h2>Tes 3 pièces</h2>
+      <button id="clearPiecesBtn" class="ghost-btn">Vider</button>
+    </div>
     <div id="tray" class="tray"></div>
-    <p class="tray-note">Remplis-les dans le même ordre que dans le jeu (A, B, C).</p>
+    <p class="tray-note">Remplis-les dans le même ordre que dans le jeu (A, B, C). Tu peux analyser avec 1, 2 ou 3 pièces.</p>
   </section>
 
   <button id="analyzeBtn" class="cta-btn">Analyser</button>
@@ -347,6 +357,8 @@ const BASE_SHAPES = [
   {name:'Carré 3×3',    cells:[[0,0],[0,1],[0,2],[1,0],[1,1],[1,2],[2,0],[2,1],[2,2]]},
   {name:'Bloc 2×3',     cells:[[0,0],[0,1],[0,2],[1,0],[1,1],[1,2]]},
   {name:'Coin',         cells:[[0,0],[0,1],[1,0]]},
+  {name:'Diagonale 2',  cells:[[0,0],[1,1]]},
+  {name:'Diagonale 3',  cells:[[0,0],[1,1],[2,2]]},
   {name:'Forme en L',   cells:[[0,0],[1,0],[2,0],[2,1]]},
   {name:'Forme en T',   cells:[[0,0],[0,1],[0,2],[1,1]]},
   {name:'Zigzag',       cells:[[0,1],[0,2],[1,0],[1,1]]},
@@ -420,10 +432,43 @@ function permutations(arr){
   return res;
 }
 
+function snugness(bd, cells, pos){
+  // Contacts de la pièce avec les blocs existants et les bords : plus c'est haut, plus le coup est compact
+  let score = 0;
+  for(const [dr,dc] of cells){
+    const r = pos.r+dr, c = pos.c+dc;
+    const nbrs = [[r-1,c],[r+1,c],[r,c-1],[r,c+1]];
+    for(const [nr,nc] of nbrs){
+      if(nr<0||nr>7||nc<0||nc>7){ score++; }
+      else if(bd[nr][nc]){ score += 2; }
+    }
+  }
+  return score;
+}
+
+function boardKey(bd){
+  let key='';
+  for(let r=0;r<8;r++){
+    let byte=0;
+    for(let c=0;c<8;c++){ if(bd[r][c]) byte |= (1<<c); }
+    key += String.fromCharCode(byte);
+  }
+  return key;
+}
+
 function searchOrderBest(initialBoard, piecesOrdered, consider, budget){
   let visited = 0;
+  const seen = new Set();
   function recurse(bd, idx, path){
     if(visited >= budget) return;
+    if(idx > 0){
+      // État déjà exploré à cette profondeur avec le même historique de lignes : inutile de recommencer
+      let clearSig='';
+      for(const s of path) clearSig += s.cleared;
+      const key = idx + '|' + clearSig + '|' + boardKey(bd);
+      if(seen.has(key)) return;
+      seen.add(key);
+    }
     if(idx===piecesOrdered.length){
       visited++;
       consider(true, idx, path, bd, null);
@@ -437,13 +482,17 @@ function searchOrderBest(initialBoard, piecesOrdered, consider, budget){
       return;
     }
     // Calculer tous les enfants puis explorer d'abord ceux qui complètent des lignes
-    const children = positions.map(pos=>{
+    let children = positions.map(pos=>{
       const nb = cloneBoard(bd);
       placeCells(nb, piece.cells, pos);
       const cleared = clearFullLines(nb);
-      return { pos, nb, cleared };
+      return { pos, nb, cleared, snug: snugness(bd, piece.cells, pos) };
     });
-    children.sort((a,b)=>b.cleared-a.cleared);
+    children.sort((a,b)=> b.cleared-a.cleared || b.snug-a.snug);
+    // Grille très ouverte : les placements sont quasi équivalents, on limite l'exploration
+    // aux coups qui complètent des lignes + aux plus compacts (contre les blocs et les bords)
+    const CAP = 18;
+    if(children.length > CAP) children = children.slice(0, CAP);
     for(const ch of children){
       if(visited >= budget) return;
       path.push({ slotIndex:piece.slotIndex, group:piece.group, color:piece.color, cells:piece.cells, pos:ch.pos, cleared:ch.cleared, boardBefore: bd });
@@ -525,7 +574,8 @@ function evaluate(result){
 }
 
 function analyze(){
-  const piecesWithSlot = slots.map((p,i)=>({ slotIndex:i, cells:p.cells, color:p.color, group:p.group }));
+  const piecesWithSlot = [];
+  slots.forEach((p,i)=>{ if(p) piecesWithSlot.push({ slotIndex:i, cells:p.cells, color:p.color, group:p.group }); });
   const orders = permutations(piecesWithSlot);
   // Ignorer les ordres équivalents quand des pièces sont identiques
   const seenOrders = new Set();
@@ -600,17 +650,50 @@ function buildIconEl(piece, cellPx){
   return el;
 }
 
+let cellEls = [];
 function renderBoard(){
   const boardEl = document.getElementById('board');
   boardEl.innerHTML='';
+  cellEls = [];
   for(let r=0;r<8;r++){
+    cellEls.push([]);
     for(let c=0;c<8;c++){
       const cell = document.createElement('div');
       cell.className = 'cell' + (board[r][c] ? ' filled' : '');
-      cell.addEventListener('click', ()=>{ board[r][c] = !board[r][c]; renderBoard(); });
+      cell.dataset.r = r; cell.dataset.c = c;
       boardEl.appendChild(cell);
+      cellEls[r].push(cell);
     }
   }
+}
+
+function setCell(r,c,v){
+  if(board[r][c] === v) return;
+  board[r][c] = v;
+  cellEls[r][c].classList.toggle('filled', v);
+}
+
+// Peinture par glissement (souris et tactile via pointer events)
+let painting = false, paintValue = true;
+function setupBoardPainting(){
+  const boardEl = document.getElementById('board');
+  boardEl.addEventListener('pointerdown', (e)=>{
+    const cell = e.target.closest('.cell');
+    if(!cell || cell.dataset.r === undefined) return;
+    painting = true;
+    const r = +cell.dataset.r, c = +cell.dataset.c;
+    paintValue = !board[r][c]; // premier contact : décide si on remplit ou on efface
+    setCell(r, c, paintValue);
+  });
+  document.addEventListener('pointermove', (e)=>{
+    if(!painting) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const cell = el && el.closest ? el.closest('#board .cell') : null;
+    if(cell) setCell(+cell.dataset.r, +cell.dataset.c, paintValue);
+  });
+  const stopPainting = ()=>{ painting = false; };
+  document.addEventListener('pointerup', stopPainting);
+  document.addEventListener('pointercancel', stopPainting);
 }
 
 function renderTray(){
@@ -717,8 +800,11 @@ function renderResults(){
   const letters = ['A','B','C'];
 
   if(forcedGameOver){
+    const total = slots.filter(s=>s!==null).length;
     const warn = document.createElement('div'); warn.className='warning-banner';
-    warn.textContent = "Attention : aucun ordre ne permet de placer les 3 pièces sur cette grille — blocage inévitable avec ce tirage. Voici le meilleur placement possible avant l'arrêt.";
+    warn.textContent = total === 1
+      ? "Attention : cette pièce ne peut être placée nulle part sur la grille — blocage."
+      : `Attention : aucun ordre ne permet de placer les ${total} pièces sur cette grille — blocage inévitable avec ce tirage. Voici le meilleur placement possible avant l'arrêt.`;
     panel.appendChild(warn);
   }
 
@@ -781,10 +867,16 @@ function renderResults(){
   prevBtn.addEventListener('click', ()=>{ if(currentStepIndex>0){ currentStepIndex--; renderStep(); } });
   nextBtn.addEventListener('click', ()=>{ if(currentStepIndex<path.length-1){ currentStepIndex++; renderStep(); } });
 
-  panel.appendChild(stepInfo);
-  panel.appendChild(stepBoardHolder);
-  panel.appendChild(navRow);
-  renderStep();
+  if(path.length > 0){
+    panel.appendChild(stepInfo);
+    panel.appendChild(stepBoardHolder);
+    if(path.length > 1) panel.appendChild(navRow);
+    renderStep();
+  } else {
+    const none = document.createElement('p'); none.className='step-info';
+    none.textContent = 'Aucune pièce ne peut être placée sur cette grille, quel que soit l\'ordre testé.';
+    panel.appendChild(none);
+  }
 
   if(chosen.failedPiece){
     const p = document.createElement('p'); p.className='note-small';
@@ -845,14 +937,20 @@ document.getElementById('clearBoardBtn').addEventListener('click', ()=>{
 });
 document.getElementById('closePicker').addEventListener('click', closePicker);
 document.getElementById('analyzeBtn').addEventListener('click', (e)=>{
-  if(slots.some(s=>s===null)){ openPicker(); return; }
+  if(slots.every(s=>s===null)){ openPicker(); return; }
   const btn = e.target; const original = btn.textContent;
   btn.textContent = 'Calcul en cours…';
   setTimeout(()=>{ analyze(); btn.textContent = original; }, 20);
 });
 
+document.getElementById('clearPiecesBtn').addEventListener('click', ()=>{
+  slots = [null,null,null];
+  renderTray();
+});
+
 buildPickerOnce();
 renderBoard();
+setupBoardPainting();
 renderTray();
 </script>
 </body>
