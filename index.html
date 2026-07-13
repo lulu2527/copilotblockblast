@@ -259,6 +259,16 @@
     border-radius:12px;
     margin-bottom:14px;
   }
+  .success-banner{
+    background:rgba(52,211,153,0.12);
+    border:1px solid rgba(52,211,153,0.55);
+    color:#C6F6E4;
+    font-size:13px;
+    line-height:1.5;
+    padding:10px 12px;
+    border-radius:12px;
+    margin-bottom:14px;
+  }
 
   .chips{ display:flex; gap:8px; margin-bottom:16px; }
   .chip{
@@ -326,7 +336,7 @@
       <li>Appuie sur Analyser : l'algorithme teste tous les ordres et tous les emplacements possibles.</li>
       <li>Suis les étapes affichées sur ta partie réelle, puis valide pour préparer le tour suivant.</li>
     </ol>
-    <p class="legend">Priorité du calcul : lignes complétées immédiatement → maintien du combo (perdu après 3 coups d'affilée sans ligne) → espace gardé pour les grandes pièces → limitation des trous isolés. Le combo se conserve d'un tour à l'autre : valide tes coups pour qu'il soit suivi correctement.</p>
+    <p class="legend">Priorité du calcul : vidage complet de la grille (gros bonus + déclencheur du pattern infini) → lignes complétées immédiatement → maintien du combo (perdu après 3 coups d'affilée sans ligne) → espace gardé pour les grandes pièces → limitation des trous isolés. Le combo se conserve d'un tour à l'autre : valide tes coups pour qu'il soit suivi correctement.</p>
   </section>
 
 </div>
@@ -503,9 +513,23 @@ function searchOrderBest(initialBoard, piecesOrdered, consider, budget){
   recurse(initialBoard, 0, []);
 }
 
+function isBoardEmpty(bd){
+  for(let r=0;r<8;r++){ for(let c=0;c<8;c++){ if(bd[r][c]) return false; } }
+  return true;
+}
+
 function evaluate(result){
   const path = result.path;
   const totalLines = path.reduce((s,st)=>s+st.cleared,0);
+  // Vidage complet de la grille : gros bonus de score dans le jeu, et point d'entrée
+  // du pattern découvert (grille vide + tirage 3×3/2×2/2×3 → mêmes pièces en boucle)
+  let fullClears = 0;
+  if(totalLines > 0){
+    for(let i=0;i<path.length;i++){
+      const after = (i < path.length-1) ? path[i+1].boardBefore : result.finalBoard;
+      if(isBoardEmpty(after)) fullClears++;
+    }
+  }
   // Simulation du combo avec la vraie règle : perdu après 3 coups d'affilée sans ligne complétée
   let combo = comboState.combo;
   let msc = comboState.movesSinceClear; // coups depuis la dernière ligne
@@ -566,9 +590,10 @@ function evaluate(result){
     }
   }
   const score = totalLines*100 + comboGain - comboRisk
+    + fullClears*400
     + (bigSquareFits?150:0) + (bigLineFits?70:0)
     + largestRegion*3 - holesPenalty*35 + totalEmpty*1;
-  result.stats = { totalLines, finalCombo:combo, maxCombo, movesSinceClear:msc, comboLost,
+  result.stats = { totalLines, finalCombo:combo, maxCombo, movesSinceClear:msc, comboLost, fullClears,
     holesPenalty, largestRegion, totalEmpty, bigSquareFits, bigLineFits };
   return score;
 }
@@ -809,6 +834,20 @@ function renderResults(){
   }
 
   const stats = chosen.stats;
+
+  if(stats.fullClears > 0){
+    const ok = document.createElement('div'); ok.className='success-banner';
+    ok.textContent = stats.fullClears > 1
+      ? `Grille entièrement vidée ${stats.fullClears} fois pendant la séquence — bonus maximal !`
+      : "Grille entièrement vidée pendant la séquence — bonus maximal, et point de départ de ton pattern infini si le prochain tirage est 3×3 + 2×2 + 2×3.";
+    panel.appendChild(ok);
+  }
+  if(isMagicHand()){
+    const info = document.createElement('div'); info.className='success-banner';
+    info.textContent = "Tirage 3×3 + 2×2 + 2×3 détecté : d'après ta découverte, si tu pars d'une grille entièrement vide avec ce tirage, le jeu reproposera les mêmes pièces en boucle.";
+    panel.appendChild(info);
+  }
+
   const chipsWrap = document.createElement('div'); chipsWrap.className='chips';
   chipsWrap.innerHTML = `
     <div class="chip"><span class="chip-num">${stats.totalLines}</span><span class="chip-label">lignes</span></div>
@@ -908,6 +947,11 @@ function renderResults(){
     });
   }
   panel.appendChild(applyBtn);
+}
+
+function isMagicHand(){
+  const names = slots.filter(Boolean).map(p=>p.group).sort();
+  return names.length===3 && names[0]==='Bloc 2×3' && names[1]==='Carré 2×2' && names[2]==='Carré 3×3';
 }
 
 function renderComboBadge(){
